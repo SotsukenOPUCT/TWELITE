@@ -1,0 +1,7 @@
+/Applications/Twelite/MWSDK/Wks_TweApps/Sotsuken/Common/Source/LcdExtras.c: In function 'vLcdScrollUp':
+/Applications/Twelite/MWSDK/Wks_TweApps/Sotsuken/Common/Source/LcdExtras.c:304:28: warning: cast increases required alignment of target type [-Wcast-align]
+/Applications/Twelite/MWSDK/Wks_TweApps/Sotsuken/Common/Source/LcdExtras.c:305:30: warning: cast increases required alignment of target type [-Wcast-align]
+/Applications/Twelite/MWSDK/Wks_TweApps/Sotsuken/Sotsuken_Parent/Parent.c: In function 'cbToCoNet_vRxEvent':
+/Applications/Twelite/MWSDK/Wks_TweApps/Sotsuken/Sotsuken_Parent/Parent.c:452:8: warning: assignment makes integer from pointer without a cast [enabled by default]
+/Applications/Twelite/MWSDK/Wks_TweApps/Sotsuken/Sotsuken_Parent/Parent.c: At top level:
+/Applications/Twelite/MWSDK/Wks_TweApps/Sotsuken/Sotsuken_Parent/Parent.c:89:31: warning: 'pContextNwk' defined but not used [-Wunused-variable]
