@@ -77,6 +77,8 @@ int layer = 2;
 // Sleep 時間設定(ms)
 int sleep = 57000;
 
+
+
 /****************************************************************************/
 /***        Local Definitions                                           ***/
 /****************************************************************************/
@@ -333,7 +335,6 @@ void input_from_keyboard(void){
 				ToCoNet_Nwk_bStart(sAppData.pContextNwk);
 			}
 			break;
-		
 		}
 	}
 }
@@ -418,6 +419,7 @@ void cbToCoNet_vMain(void) {
 	/* handle serial input */
 	input_from_keyboard();
 }
+
 
 /**
  * 子機または中継機を経由したデータを受信する。

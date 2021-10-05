@@ -55,7 +55,7 @@ tsCbHandler *psCbHandler = NULL;
 
 static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32 u32evarg);
 static void vInitHardware(int f_warm_start);
-static void vSerialInit( uint32 u32Baud, tsUartOpt *pUartOpt );
+static void vSerialInit();
 
 /****************************************************************************/
 /***        Local Variables                                               ***/
@@ -63,8 +63,8 @@ static void vSerialInit( uint32 u32Baud, tsUartOpt *pUartOpt );
 
 // Local data used by the tag during operation
 tsAppData_Pa sAppData;
-tsFILE sSerStream;
-tsSerialPortSetup sSerPort;
+tsFILE sSerStream, sSerStream1;
+tsSerialPortSetup sSerPort, sSerPort1;
 
 // Timer object
 tsTimerContext sTimerApp;
@@ -72,6 +72,12 @@ static bool_t bVwd = FALSE;
 uint32 rdate = 0x80000000;
 
 tsToCoNet_NwkLyTr_Context *pc;
+
+/****************************************************************************/
+/***        Local Definitions                                           ***/
+/****************************************************************************/
+
+#define LED   9          // LED
 
 /****************************************************************************/
 /***        Local Functions                                               ***/
@@ -82,17 +88,14 @@ vProcessEvCore
 ユーザーイベント関数
 cold start内のToCoNet_Event_Register_State_Machine(vProcessEvCore)で定義
 */
-
 static tsToCoNet_NwkLyTr_Config sNwkLayerTreeConfig;
-static tsToCoNet_Nwk_Context* pContextNwk;
+static tsToCoNet_Nwk_Context *pContextNwk;
 
 static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32 u32evarg) {
 switch (pEv->eState) {
 	// アイドル状態
 	case E_STATE_IDLE:
-		A_PRINTF(LB"[E_STATE_IDLE]");
 		if (eEvent == E_EVENT_START_UP) {
-			// A_PRINTF(LB"[E_STATE_IDLE]");
 			//レイヤー数の設定
 			sNwkLayerTreeConfig.u8Layer = 1;	//0
 			//	NBビーコン方式
@@ -111,7 +114,7 @@ switch (pEv->eState) {
 	// 稼働状態
 	case E_STATE_RUNNING:
 		if(eEvent == E_EVENT_NEW_STATE){
-			A_PRINTF(LB "[E_STATE_RUNNING]");
+			//A_PRINTF(LB "[E_STATE_RUNNING]");
 		}
 		if(eEvent == E_EVENT_TX){
 			//レイヤー数の設定
@@ -174,6 +177,15 @@ switch (pEv->eState) {
 	default:
 		break;
 	}
+
+	// 1秒毎にいろいろテスト
+	if (eEvent == E_EVENT_TICK_SECOND) {
+        // DO4 の Lo / Hi をトグル
+        //bPortRead(LED) ? vPortSetHi(LED) : vPortSetLo(LED);
+
+		//Serial1をテスト
+		vfPrintf(&sSerStream1,"Hello\r\n");
+    }
 }
 
 /*input_from_keyboard
@@ -289,7 +301,7 @@ void input_from_keyboard(void)
 				//送信要求
 				if (ToCoNet_Nwk_bTx(sAppData.pContextNwk, &sTx)) {
 					A_PRINTF(LB"Tx Processing (AddrHigherLayer : %08x)"LB,pc->u32AddrHigherLayer);
-				} else {
+				} else {	
 					A_PRINTF(LB"Tx Error"LB);
 				}
 
@@ -302,15 +314,56 @@ void input_from_keyboard(void)
 			}
 			break;
 
-				case 'r': //ネットワーク再始動
+		case 'r': //ネットワーク再始動
 			_C {
 				ToCoNet_Nwk_bInit(sAppData.pContextNwk);
 				ToCoNet_Nwk_bStart(sAppData.pContextNwk);
 			}
 			break;
 
+		case 'e': //シリアル通信のテスト用
+			_C {
+				if (!bPortRead(LED)) {
+                	vPortSetLo(LED);
+					A_PUTCHAR('A');
+            	} else {
+					vPortSetHi(LED);
+					A_PUTCHAR('B');
+					
+				}
+			}
+			break;
 		}
 	}
+}
+
+void input_from_esp32(void) {
+
+	while (!SERIAL_bRxQueueEmpty(sSerPort1.u8SerialPort)) {
+		// UART1のFIFOキューから１バイトずつ取り出して処理する。
+		int16 i16Char;
+
+		i16Char = SERIAL_i16RxChar(sSerPort1.u8SerialPort);
+
+		//vfPrintf(&sSerStream1, "\n\r# [%c] --> ", i16Char);
+	    SERIAL_vFlush(sSerStream1.u8Device);
+
+		switch(i16Char){
+			case 'h':
+			_C {
+				if (!bPortRead(LED)) {
+                	vPortSetLo(LED);
+					A_PUTCHAR('A');
+            	} else {
+					vPortSetHi(LED);
+					A_PUTCHAR('B');
+					
+				}
+			}
+			break;
+		}
+	}
+		
 }
 
 void router(){
@@ -329,7 +382,7 @@ void router(){
 	sTx.u8Retry = 0x82; //3回送る
 
 	// SPRINTF でメッセージを作成
-	SPRINTF_vRewind();
+	SPRINTF_vRewind();	// 内部ポインタを先頭に巻き戻す
 	vfPrintf(SPRINTF_Stream, LB"%08x",ToCoNet_u32GetSerial());
 	// vfPrintf(SPRINTF_Stream, LB"%s -> %08x",rdate,ToCoNet_u32GetSerial());
 	memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
@@ -388,8 +441,10 @@ void cbAppColdStart(bool_t bAfterAhiInit) {
 		vInitHardware(FALSE);
 		Interactive_vInit();
 
+		//ToCoNet_vDebugInit(&sSerStream);
 		ToCoNet_vDebugInit(&sSerStream);
 		ToCoNet_vDebugLevel(TOCONET_DEBUG_LEVEL);
+
 		// START UP MESSAGE
 		A_PRINTF(LB "Parent:%08x" LB,ToCoNet_u32GetSerial());
 	}
@@ -418,6 +473,7 @@ void cbAppWarmStart(bool_t bStart) {
 void cbToCoNet_vMain(void) {
 	/* handle serial input */
 	input_from_keyboard();
+	input_from_esp32();
 }
 
 /**
@@ -538,56 +594,12 @@ PRIVATE void vInitHardware(int f_warm_start) {
 	// インタラクティブモードの初期化
 	Interactive_vInit();
 
+	// 使用ポートの設定
+    vPortAsOutput(LED);
+    vPortSetHi(LED);
+
 	// Serial Port の初期化
-	{
-		tsUartOpt sUartOpt;
-		memset(&sUartOpt, 0, sizeof(tsUartOpt));
-		uint32 u32baud = UART_BAUD;
-
-		// BPS ピンが Lo の時は 38400bps
-		vPortAsInput(PORT_BAUD);
-		if (sAppData.bFlashLoaded && (bPortRead(PORT_BAUD) || IS_APPCONF_OPT_UART_FORCE_SETTINGS() )) {
-			u32baud = sAppData.sFlash.sData.u32baud_safe;
-			sUartOpt.bHwFlowEnabled = FALSE;
-			sUartOpt.bParityEnabled = UART_PARITY_ENABLE;
-			sUartOpt.u8ParityType = UART_PARITY_TYPE;
-			sUartOpt.u8StopBit = UART_STOPBITS;
-
-			// 設定されている場合は、設定値を採用する (v1.0.3)
-			switch(sAppData.sFlash.sData.u8parity & APPCONF_UART_CONF_PARITY_MASK) {
-			case 0:
-				sUartOpt.bParityEnabled = FALSE;
-				break;
-			case 1:
-				sUartOpt.bParityEnabled = TRUE;
-				sUartOpt.u8ParityType = E_AHI_UART_ODD_PARITY;
-				break;
-			case 2:
-				sUartOpt.bParityEnabled = TRUE;
-				sUartOpt.u8ParityType = E_AHI_UART_EVEN_PARITY;
-				break;
-			}
-
-			// ストップビット
-			if (sAppData.sFlash.sData.u8parity & APPCONF_UART_CONF_STOPBIT_MASK) {
-				sUartOpt.u8StopBit = E_AHI_UART_2_STOP_BITS;
-			} else {
-				sUartOpt.u8StopBit = E_AHI_UART_1_STOP_BIT;
-			}
-
-			// 7bitモード
-			if (sAppData.sFlash.sData.u8parity & APPCONF_UART_CONF_WORDLEN_MASK) {
-				sUartOpt.u8WordLen = 7;
-			} else {
-				sUartOpt.u8WordLen = 8;
-			}
-
-			vSerialInit(u32baud, &sUartOpt);
-		} else {
-			vSerialInit(u32baud, NULL);
-		}
-
-	}
+	vSerialInit();
 
 	// 受信したときにDO1を光らせる
 	bAHI_DoEnableOutputs(TRUE);
@@ -601,28 +613,51 @@ PRIVATE void vInitHardware(int f_warm_start) {
 }
 
 /**
- * UART の初期化
+ * UARTの初期化
  */
-void vSerialInit( uint32 u32Baud, tsUartOpt *pUartOpt ) {
+void vSerialInit() {
 	/* Create the debug port transmit and receive queues */
-	static uint8 au8SerialTxBuffer[1024];
-	static uint8 au8SerialRxBuffer[512];
+	static uint8 au8SerialTxBuffer0[1024];
+	static uint8 au8SerialRxBuffer0[512];
 
-	/* Initialise the serial port to be used for debug output */
-	sSerPort.pu8SerialRxQueueBuffer = au8SerialRxBuffer;
-	sSerPort.pu8SerialTxQueueBuffer = au8SerialTxBuffer;
+	static uint8 au8SerialTxBuffer1[1024];
+	static uint8 au8SerialRxBuffer1[512];
+
+	/* Initialise the serial port (0) to be used for debug output */
+	sSerPort.pu8SerialRxQueueBuffer = au8SerialRxBuffer0;
+	sSerPort.pu8SerialTxQueueBuffer = au8SerialTxBuffer0;
 	sSerPort.u32BaudRate = UART_BAUD;
 	sSerPort.u16AHI_UART_RTS_LOW = 0xffff;
 	sSerPort.u16AHI_UART_RTS_HIGH = 0xffff;
-	sSerPort.u16SerialRxQueueSize = sizeof(au8SerialRxBuffer);
-	sSerPort.u16SerialTxQueueSize = sizeof(au8SerialTxBuffer);
-	sSerPort.u8SerialPort = UART_PORT;
+	sSerPort.u16SerialRxQueueSize = sizeof(au8SerialRxBuffer0);
+	sSerPort.u16SerialTxQueueSize = sizeof(au8SerialTxBuffer0);
+	sSerPort.u8SerialPort = UART0_PORT;
 	sSerPort.u8RX_FIFO_LEVEL = E_AHI_UART_FIFO_LEVEL_1;
 	SERIAL_vInit(&sSerPort);
 
 	sSerStream.bPutChar = SERIAL_bTxChar;
-	sSerStream.u8Device = UART_PORT;
+	sSerStream.u8Device = UART0_PORT;
+
+
+	/* Initialise the serial port (1) to be used for ESP32 output */
+	/* TweliteのUART1のピンはTxが2（基板の表示は14）, RXが19（基板の表示は15） */
+	sSerPort1.pu8SerialRxQueueBuffer = au8SerialRxBuffer1;
+	sSerPort1.pu8SerialTxQueueBuffer = au8SerialTxBuffer1;
+	sSerPort1.u32BaudRate = UART_BAUD;
+	sSerPort1.u16AHI_UART_RTS_LOW = 0xffff;
+	sSerPort1.u16AHI_UART_RTS_HIGH = 0xffff;
+	sSerPort1.u16SerialRxQueueSize = sizeof(au8SerialRxBuffer1);
+	sSerPort1.u16SerialTxQueueSize = sizeof(au8SerialTxBuffer1);
+	sSerPort1.u8SerialPort = UART1_PORT;
+	sSerPort1.u8RX_FIFO_LEVEL = E_AHI_UART_FIFO_LEVEL_1;
+	SERIAL_vInit(&sSerPort1);
+
+	sSerStream1.bPutChar = SERIAL_bTxChar;
+	sSerStream1.u8Device = UART1_PORT;
+
 }
+
+
 
 /****************************************************************************/
 /***        END OF FILE                                                   ***/
