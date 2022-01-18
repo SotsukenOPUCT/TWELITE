@@ -2,7 +2,6 @@
  * Released under MW-SLA-*J,*E (MONO WIRELESS SOFTWARE LICENSE   *
  * AGREEMENT).                                                   */
 
-
 #include "jendefs.h"
 #include <string.h>
 

@@ -1,9 +1,10 @@
-
 /****************************************************************************/
 /***        Include files                                                 ***/
 /****************************************************************************/
 
 #include <string.h>
+#include <math.h>
+#include <stdlib.h>
 #include <jendefs.h>
 #include <AppHardwareApi.h>
 #include "AppQueueApi_ToCoNet.h"
@@ -15,6 +16,10 @@
 #include "utils.h"
 #include "flash.h"
 #include "common.h"
+
+// ADC & Sensor
+#include "sensor_driver.h"
+#include "adc.h"
 
 // Serial options
 #include "serial.h"
@@ -55,6 +60,7 @@ tsCbHandler *psCbHandler = NULL;
 static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32 u32evarg);
 static void vInitHardware(int f_warm_start);
 static void vSerialInit( uint32 u32Baud, tsUartOpt *pUartOpt );
+static void Get_SensorData_and_LayerNo(uint8_t *data_array);
 
 /****************************************************************************/
 /***        Local Variables                                               ***/
@@ -72,12 +78,19 @@ static bool_t bVwd = FALSE;
 tsToCoNet_NwkLyTr_Context *pc;
 
 // Layer 設定
-int layer = 2;
+uint16_t layer = 3;	// 最大31
 
-// Sleep 時間設定(ms)
-int sleep = 57000;
+// Sleep 時間設定(ms) Layer数が低い中継機ほど短く設定する。
+const int sleep = 55000;
 
+const int8_t TelegramType = 0;		// 0:Binary  1:Ascii
+uint8_t new_data[3];
 
+// ADC
+tsObjData_ADC sObjADC; // ADC管理構造体（データ部）
+tsSnsObj sADC; // ADC管理構造体（制御部）
+uint16_t ADC1;
+uint16_t sensor_and_layer_data;
 
 /****************************************************************************/
 /***        Local Definitions                                           ***/
@@ -314,11 +327,29 @@ void input_from_keyboard(void){
 				sTx.u8Retry = 0x82; //3回送る
 				sTx.u16DelayMin = 1000;
 
-				// SPRINTF でメッセージを作成
-				SPRINTF_vRewind();
-				vfPrintf(SPRINTF_Stream, "%08x", ToCoNet_u32GetSerial());
-				memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
-				sTx.u8Len = SPRINTF_u16Length();
+				Get_SensorData_and_LayerNo(new_data);
+				switch (TelegramType) {
+				case 0:
+					// Binary方式
+					memcpy(sTx.auData, new_data, sizeof(new_data));
+					sTx.u8Len = sizeof(new_data);					
+					break;
+
+				case 1:
+					// ASCII方式（SPRINTF でメッセージを作成）
+					SPRINTF_vRewind();
+					vfPrintf(SPRINTF_Stream, "%05d", sensor_and_layer_data);
+					memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
+					sTx.u8Len = SPRINTF_u16Length();
+					break;
+				
+				default:
+					break;
+				}
+				
+				// For debug
+				// A_PRINTF(LB"LM61:%d", sensor_and_layer_data); // ADC1[mV]
+				// A_PRINTF(LB"DATA_SIZE: %d, Content: %s"LB, sTx.u8Len, sTx.auData);
 
 				if(ToCoNet_Nwk_bTx(sAppData.pContextNwk, &sTx)){
 					A_PRINTF(LB"Tx Processing (AddrHigherLayer : %08x)"LB,pc->u32AddrHigherLayer);
@@ -335,9 +366,30 @@ void input_from_keyboard(void){
 				ToCoNet_Nwk_bStart(sAppData.pContextNwk);
 			}
 			break;
+
 		}
 	}
 }
+
+
+void Get_SensorData_and_LayerNo(uint8_t *data_array) {
+	// ADC開始
+	vSnsObj_Process(&sADC, E_ORDER_KICK); // 開始の号令
+	uint16_t sensor = sObjADC.ai16Result[TEH_ADC_IDX_ADC_1];	// 温度センサー
+	if( (sensor <= 500) || (sensor >= 1200) ){
+		sensor = 0;
+	}
+
+	data_array[0] = layer;
+	data_array[1] = (sensor & 0xFF00) >> 8;	// 上位8bit
+	data_array[2] = sensor & 0x00FF;	// 下位8bit
+	
+	// For debug
+	// A_PRINTF(LB"Layer is:%02x, Sensor RAW:%04x, Sensor:%02x%02x", data_array[0], sensor, data_array[1], data_array[2]);
+}
+
+
+
 
 /****************************************************************************/
 /***        コールバック関数（記述必須）                                               ***/
@@ -371,7 +423,7 @@ void cbAppColdStart(bool_t bAfterAhiInit) {
 		SPRINTF_vInit128();
 
 		// フラッシュメモリからの読み出し
-		//   フラッシュからの読み込みが失敗した場合、ID=15 で設定する
+		// フラッシュからの読み込みが失敗した場合、ID=15 で設定する
 		sAppData.bFlashLoaded = Config_bLoad(&sAppData.sFlash);
 	
 
@@ -438,7 +490,7 @@ void cbToCoNet_vMain(void) {
 	A_PRINTF(LB"SrcAddr:%08x"
 			 LB"DstAddr:%08x"
 			 LB"Len:%d"
-			 LB"LQI:%d"LB
+			 LB"LQI:%d"
 			 LB"%s"LB,
 			 pRx->u32SrcAddr,
 			 pRx->u32DstAddr,
@@ -464,10 +516,30 @@ void cbToCoNet_vMain(void) {
 			sTx.u8Retry = 0x82; //3回送る
 			sTx.u16DelayMin = 2000;
 			
-			SPRINTF_vRewind();
-			vfPrintf(SPRINTF_Stream, LB"%s -> %08x",pRx->auData,ToCoNet_u32GetSerial());
-			memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
-			sTx.u8Len = SPRINTF_u16Length();
+			// センサ情報とレイヤ番号データの取得
+			Get_SensorData_and_LayerNo(new_data);
+
+			int origin_len = pRx->u8Len;	// 受信データのサイズ
+			unsigned int data_size = sizeof(uint8_t) * 3;	// new_dataのサイズ（要するに3バイト）
+
+			switch (TelegramType) {
+			case 0:			// Binary方式
+				// まずはmemcpyでsTx.auDataに受信データ(pRx->auData)をぶち込む。続いて付加するデータ(new_data)をぶち込む。
+				memcpy(memcpy(sTx.auData, pRx->auData, origin_len) + origin_len, new_data, data_size);
+				sTx.u8Len = origin_len + data_size;
+				break;
+			
+			case 1:			// ASCII方式（SPRINTF でメッセージを作成）
+				SPRINTF_vRewind();
+				vfPrintf(SPRINTF_Stream, LB"%s%05d", pRx->auData, sensor_and_layer_data);
+				memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
+				sTx.u8Len = SPRINTF_u16Length();
+				break;
+			
+			default:
+				break;
+			}
+			
 
 		//　送信処理に関する表示
 		if (ToCoNet_Nwk_bTx(sAppData.pContextNwk, &sTx)) {
@@ -542,6 +614,22 @@ void cbToCoNet_vNwkEvent(teEvent eEvent, uint32 u32arg) {
  * @param u32ItemBitmap	割り込みパラメータ
  */
 void cbToCoNet_vHwEvent(uint32 u32DeviceId, uint32 u32ItemBitmap) {
+	switch (u32DeviceId) {
+		case E_AHI_DEVICE_ANALOGUE:
+			// ADC完了割り込み
+			vSnsObj_Process(&sADC, E_ORDER_KICK);
+			if (bSnsObj_isComplete(&sADC)) {
+				// 全チャネルの処理が終わった。
+				ADC1 = sObjADC.ai16Result[TEH_ADC_IDX_ADC_1];
+				// ADC開始前の初期状態に戻す
+				vSnsObj_Process(&sADC, E_ORDER_KICK);
+			}
+			
+		break;
+
+		default:
+			break;
+	}
 }
 
 /**
@@ -628,6 +716,13 @@ PRIVATE void vInitHardware(int f_warm_start) {
 	vPortSet_TrueAsLo(9, bVwd);	// VWDをいったんHiにする。
 	vPortAsOutput(11);			// DIO11を出力として使用する。
 	vPortAsOutput(9);			// DIO9を出力として使用する。
+
+	// ADCの初期化
+	vSnsObj_Init(&sADC);
+	vADC_Init(&sObjADC, &sADC, TRUE);
+	vADC_WaitInit();	// ハード初期化待ちを行う
+	sObjADC.u8SourceMask = TEH_ADC_SRC_VOLT | TEH_ADC_SRC_ADC_1;	// ADC計測したいポートの指定
+	vSnsObj_Process(&sADC, E_ORDER_KICK);	// 開始の号令
 }
 
 /**
@@ -647,12 +742,12 @@ void vSerialInit( uint32 u32Baud, tsUartOpt *pUartOpt ) {
 	sSerPort.u16AHI_UART_RTS_HIGH = 0xffff;
 	sSerPort.u16SerialRxQueueSize = sizeof(au8SerialRxBuffer);
 	sSerPort.u16SerialTxQueueSize = sizeof(au8SerialTxBuffer);
-	sSerPort.u8SerialPort = UART_PORT;
+	sSerPort.u8SerialPort = UART0_PORT;
 	sSerPort.u8RX_FIFO_LEVEL = E_AHI_UART_FIFO_LEVEL_1;
 	SERIAL_vInit(&sSerPort);
 
 	sSerStream.bPutChar = SERIAL_bTxChar;
-	sSerStream.u8Device = UART_PORT;
+	sSerStream.u8Device = UART0_PORT;
 }
 /****************************************************************************/
 /***        END OF FILE                                                   ***/

@@ -24,6 +24,10 @@
 #include "sercmd_gen.h"
 #include "AddrKeyAry.h"
 
+// ADC & Sensor
+#include "sensor_driver.h"
+#include "adc.h"
+
 /****************************************************************************/
 /***        ToCoNet Definitions                                           ***/
 /****************************************************************************/
@@ -56,6 +60,7 @@ tsCbHandler *psCbHandler = NULL;
 static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32 u32evarg);
 static void vInitHardware(int f_warm_start);
 static void vSerialInit();
+static void Get_SensorData_and_LayerNo(uint8_t *data_array);
 
 /****************************************************************************/
 /***        Local Variables                                               ***/
@@ -73,11 +78,21 @@ uint32 rdate = 0x80000000;
 
 tsToCoNet_NwkLyTr_Context *pc;
 
+// ADC
+tsObjData_ADC sObjADC; // ADC管理構造体（データ部）
+tsSnsObj sADC; // ADC管理構造体（制御部）
+
+// 通信フォーマット
+const int8_t TelegramType = 0;		// 0:Binary  1:Ascii
+
+
 /****************************************************************************/
 /***        Local Definitions                                           ***/
 /****************************************************************************/
 
 #define LED   9          // LED
+uint16_t ADC1;
+uint16_t sensor_and_layer_data;
 
 /****************************************************************************/
 /***        Local Functions                                               ***/
@@ -114,7 +129,7 @@ switch (pEv->eState) {
 	// 稼働状態
 	case E_STATE_RUNNING:
 		if(eEvent == E_EVENT_NEW_STATE){
-			//A_PRINTF(LB "[E_STATE_RUNNING]");
+
 		}
 		if(eEvent == E_EVENT_TX){
 			//レイヤー数の設定
@@ -129,6 +144,7 @@ switch (pEv->eState) {
 			A_PRINTF(LB "Tx layer %d", sAppData.sNwkLayerTreeConfig.u8Layer);
 			ToCoNet_Nwk_bInit(sAppData.pContextNwk);
 			ToCoNet_Nwk_bStart(sAppData.pContextNwk);
+			ToCoNet_Event_SetState(pEv, E_STATE_APP_WAIT_A);
 		}
 		if(eEvent == E_ORDER_KICK_WAIT){
 			A_PRINTF(LB "Start Tx Wait");
@@ -160,7 +176,6 @@ switch (pEv->eState) {
 	// 送信
 	case E_STATE_APP_TX:
 		if (eEvent == E_EVENT_NEW_STATE) {
-			A_PRINTF(LB"[E_STATE_APP_TX]");
 			memset(&sNwkLayerTreeConfig, 0, sizeof(sNwkLayerTreeConfig));
 			sNwkLayerTreeConfig.u8StartOpt = TOCONET_MOD_LAYERTREE_STARTOPT_NB_BEACON;
 			//sAppData.sNwkLayerTreeConfig.u8LayerOptions = 1;
@@ -178,13 +193,10 @@ switch (pEv->eState) {
 		break;
 	}
 
-	// 1秒毎にいろいろテスト
+	// 1秒毎に発生
 	if (eEvent == E_EVENT_TICK_SECOND) {
-        // DO4 の Lo / Hi をトグル
+        // DO4 の Lo / Hi をトグル (Lチカ)
         //bPortRead(LED) ? vPortSetHi(LED) : vPortSetLo(LED);
-
-		//Serial1をテスト
-		vfPrintf(&sSerStream1,"Hello\r\n");
     }
 }
 
@@ -274,10 +286,14 @@ void input_from_keyboard(void)
 
 		case 't': // パケット送信
 			_C {
+				//ToCoNet_Nwk_bStop(sAppData.pContextNwk);
+				
+				
 				tsTxDataApp sTx;
 				memset(&sTx, 0, sizeof(sTx)); // 必ず０クリアしてから使う！
 				uint8 *q =  sTx.auData;
 				sAppData.sNwkLayerTreeConfig.u8Layer = 10;
+				sAppData.pContextNwk = ToCoNet_NwkLyTr_psConfig(&sAppData.sNwkLayerTreeConfig);
 
 				sTx.u32SrcAddr = ToCoNet_u32GetSerial();
 				sTx.u32DstAddr = TOCONET_NWK_ADDR_NEIGHBOUR_ABOVE;
@@ -289,23 +305,13 @@ void input_from_keyboard(void)
 				sTx.u8Retry = 0x82; //3回送る
 
 				// SPRINTF でメッセージを作成
-				SPRINTF_vRewind();
-				vfPrintf(SPRINTF_Stream, "Test");
-				memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
-				sTx.u8Len = SPRINTF_u16Length();
+				//SPRINTF_vRewind();
+				//vfPrintf(SPRINTF_Stream, "Test");
+				//memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
 
-				A_PRINTF(LB "Router Layer %d", sAppData.sNwkLayerTreeConfig.u8Layer);
-				ToCoNet_Nwk_bInit(sAppData.pContextNwk);
-				ToCoNet_Nwk_bStart(sAppData.pContextNwk);
-
-				//送信要求
-				if (ToCoNet_Nwk_bTx(sAppData.pContextNwk, &sTx)) {
-					A_PRINTF(LB"Tx Processing (AddrHigherLayer : %08x)"LB,pc->u32AddrHigherLayer);
-				} else {	
-					A_PRINTF(LB"Tx Error"LB);
-				}
-
-				sAppData.sNwkLayerTreeConfig.u8Layer = 1;
+				// 空データ送信
+				memset(sTx.auData, 0, sizeof(sTx.auData));
+				sTx.u8Len = 0;
 
 				A_PRINTF(LB "Router Layer %d", sAppData.sNwkLayerTreeConfig.u8Layer);
 				ToCoNet_Nwk_bInit(sAppData.pContextNwk);
@@ -320,19 +326,6 @@ void input_from_keyboard(void)
 				ToCoNet_Nwk_bStart(sAppData.pContextNwk);
 			}
 			break;
-
-		case 'e': //シリアル通信のテスト用
-			_C {
-				if (!bPortRead(LED)) {
-                	vPortSetLo(LED);
-					A_PUTCHAR('A');
-            	} else {
-					vPortSetHi(LED);
-					A_PUTCHAR('B');
-					
-				}
-			}
-			break;
 		}
 	}
 }
@@ -345,20 +338,50 @@ void input_from_esp32(void) {
 
 		i16Char = SERIAL_i16RxChar(sSerPort1.u8SerialPort);
 
-		//vfPrintf(&sSerStream1, "\n\r# [%c] --> ", i16Char);
 	    SERIAL_vFlush(sSerStream1.u8Device);
 
 		switch(i16Char){
-			case 'h':
+			case 'l':
 			_C {
 				if (!bPortRead(LED)) {
                 	vPortSetLo(LED);
-					A_PUTCHAR('A');
             	} else {
 					vPortSetHi(LED);
-					A_PUTCHAR('B');
 					
 				}
+			}
+			break;
+			
+			case 't':				// パケット送信
+			_C {
+				tsTxDataApp sTx;
+				memset(&sTx, 0, sizeof(sTx)); // 必ず０クリアしてから使う！
+				uint8 *q =  sTx.auData;
+				sAppData.sNwkLayerTreeConfig.u8Layer = 10;
+				sAppData.pContextNwk = ToCoNet_NwkLyTr_psConfig(&sAppData.sNwkLayerTreeConfig);
+
+				sTx.u32SrcAddr = ToCoNet_u32GetSerial();
+				sTx.u32DstAddr = TOCONET_NWK_ADDR_NEIGHBOUR_ABOVE;
+
+				sTx.u8Cmd = 0; // 0..7 の値を取る。パケットの種別を分けたい時に使用する
+				sTx.u8Len = q - sTx.auData; // パケットのサイズ
+				sTx.u8CbId = sAppData.u16frame_count & 0xFF; // TxEvent で通知される番号、送信先には通知されない
+				sTx.u8Seq = sAppData.u16frame_count & 0xFF; // シーケンス番号(送信先に通知される)
+				sTx.u8Retry = 0x82; //3回送る
+
+				// 空のデータ送信
+				memset(sTx.auData, 0, sizeof(sTx.auData));
+				sTx.u8Len = 0;
+
+				A_PRINTF(LB "Router Layer %d", sAppData.sNwkLayerTreeConfig.u8Layer);
+				ToCoNet_Nwk_bInit(sAppData.pContextNwk);
+				ToCoNet_Nwk_bStart(sAppData.pContextNwk);
+			}
+			break;
+
+			case 's':				// 再起動
+			_C {
+				ToCoNet_vSleep(E_AHI_WAKE_TIMER_0, 100, FALSE, FALSE); 
 			}
 			break;
 		}
@@ -381,12 +404,19 @@ void router(){
 	sTx.u8Seq = sAppData.u16frame_count & 0xFF; // シーケンス番号(送信先に通知される)
 	sTx.u8Retry = 0x82; //3回送る
 
-	// SPRINTF でメッセージを作成
-	SPRINTF_vRewind();	// 内部ポインタを先頭に巻き戻す
-	vfPrintf(SPRINTF_Stream, LB"%08x",ToCoNet_u32GetSerial());
-	// vfPrintf(SPRINTF_Stream, LB"%s -> %08x",rdate,ToCoNet_u32GetSerial());
-	memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
-	sTx.u8Len = SPRINTF_u16Length();
+	uint8_t new_data[3] = {0};
+	Get_SensorData_and_LayerNo(new_data);
+
+	// ASCII形式（SPRINTF でメッセージを作成）
+	// SPRINTF_vRewind();	// 内部ポインタを先頭に巻き戻す
+	// //vfPrintf(SPRINTF_Stream, LB"%08x",ToCoNet_u32GetSerial());
+	// vfPrintf(SPRINTF_Stream, LB"%05d", sensor_and_layer_data);
+	// memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
+	// sTx.u8Len = SPRINTF_u16Length();
+	
+	// Binary形式
+	memcpy(sTx.auData, new_data, sizeof(new_data));
+	sTx.u8Len = sizeof(new_data);
 
 	//　送信処理に関する表示
 	if (ToCoNet_Nwk_bTx(sAppData.pContextNwk, &sTx)) {
@@ -395,7 +425,29 @@ void router(){
 		A_PRINTF("Tx Error"LB);
 		}
 
+}
+
+
+/* 
+Get_SensorData_and_LayerNo
+センサデータを取得して、レイヤー番号情報を付加。送信用データを作成。
+*/
+void Get_SensorData_and_LayerNo(uint8_t *data_array) {
+	// ADC開始
+	vSnsObj_Process(&sADC, E_ORDER_KICK); // 開始の号令
+	uint16_t sensor = sObjADC.ai16Result[TEH_ADC_IDX_ADC_1];	// 温度センサー
+	if( (sensor <= 500) || (sensor >= 1200) ){
+		sensor = 0;
 	}
+
+	data_array[0] = 1;						// レイヤー数
+	data_array[1] = (sensor & 0xFF00) >> 8;	// 上位8bit
+	data_array[2] = sensor & 0x00FF;		// 下位8bit
+	
+	// For debug
+	//A_PRINTF(LB"Layer is:%02x, Sensor RAW:%04x, Sensor1:%02x, Sensor2:%02x", data_array[0], sensor, data_array[1], data_array[2]);
+}
+
 
 /****************************************************************************/
 /***        コールバック関数（記述必須）                                    ***/
@@ -441,7 +493,6 @@ void cbAppColdStart(bool_t bAfterAhiInit) {
 		vInitHardware(FALSE);
 		Interactive_vInit();
 
-		//ToCoNet_vDebugInit(&sSerStream);
 		ToCoNet_vDebugInit(&sSerStream);
 		ToCoNet_vDebugLevel(TOCONET_DEBUG_LEVEL);
 
@@ -492,14 +543,38 @@ void cbToCoNet_vMain(void) {
 	A_PRINTF(LB"SrcAddr:%08x"
 			 LB"DstAddr:%08x"
 			 LB"Len:%d"
-			 LB"LQI:%d"LB
+			 LB"LQI:%d"
+			 LB"DataSize:%d"
 			 LB"%s"LB,
 			 pRx->u32SrcAddr,
 			 pRx->u32DstAddr,
 			 pRx->u8Len,
 			 pRx->u8Lqi,
-			 pRx->auData
+			 sizeof(pRx->auData),
+			 pRx->auData	 
 	);
+
+	// auDataをESP32に送信
+	int i=0;
+	int size_of_array = sizeof(pRx->auData)/sizeof(pRx->auData[0]);
+	switch (TelegramType) {
+	case 0:
+		// Binary形式のデータの場合
+		while(i < (pRx->u8Len)){
+			vfPrintf(&sSerStream1,"%02x", pRx->auData[i]);
+			i++;
+		}
+		vfPrintf(&sSerStream1,"\r\n");
+		break;
+	
+	case 1:
+		// ASCII形式のデータの場合
+		vfPrintf(&sSerStream1,"%s\r\n", pRx->auData);
+		break;
+	
+	default:
+		break;
+	}
 
 	rdate = pRx;
 
@@ -568,6 +643,22 @@ void cbToCoNet_vNwkEvent(teEvent eEvent, uint32 u32arg) {
  * @param u32ItemBitmap	割り込みパラメータ
  */
 void cbToCoNet_vHwEvent(uint32 u32DeviceId, uint32 u32ItemBitmap) {
+	switch (u32DeviceId) {
+		case E_AHI_DEVICE_ANALOGUE:
+			// ADC完了割り込み
+			vSnsObj_Process(&sADC, E_ORDER_KICK);
+			if (bSnsObj_isComplete(&sADC)) {
+				// 全チャネルの処理が終わった。
+				ADC1 = sObjADC.ai16Result[TEH_ADC_IDX_ADC_1];
+				// ADC開始前の初期状態に戻す
+				vSnsObj_Process(&sADC, E_ORDER_KICK);
+			}
+			
+		break;
+
+		default:
+			break;
+	}
 }
 
 /**
@@ -610,6 +701,14 @@ PRIVATE void vInitHardware(int f_warm_start) {
 	vPortSet_TrueAsLo(9, bVwd);	// VWDをいったんHiにする。
 	vPortAsOutput(11);			// DIO11を出力として使用する。
 	vPortAsOutput(9);			// DIO9を出力として使用する。
+
+	// ADCの初期化
+	vSnsObj_Init(&sADC);
+	vADC_Init(&sObjADC, &sADC, TRUE);
+	vADC_WaitInit(); // ハード初期化待ちを行う
+	// ADC計測したいポートの指定
+	sObjADC.u8SourceMask = TEH_ADC_SRC_VOLT | TEH_ADC_SRC_ADC_1;
+	vSnsObj_Process(&sADC, E_ORDER_KICK); // 開始の号令
 }
 
 /**

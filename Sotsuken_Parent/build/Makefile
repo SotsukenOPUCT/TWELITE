@@ -37,6 +37,9 @@ APPSRC += LcdExtras.c
 APPSRC += LcdFont.c
 APPSRC += LcdPrint.c
 
+APPSRC += sensor_driver.c
+APPSRC += adc.c
+
 ### Additional Src/Include Path
 # if set, find source files from given dirs.
 #

@@ -31,6 +31,9 @@ APPSRC += sercmd_chat.c
 APPSRC += sercmd_plus3.c
 APPSRC += sercmd_binary.c
 
+APPSRC += sensor_driver.c
+APPSRC += adc.c
+
 ### Additional Src/Include Path
 # if set, find source files from given dirs.
 #
