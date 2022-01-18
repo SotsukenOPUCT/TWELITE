@@ -531,7 +531,7 @@ void cbToCoNet_vMain(void) {
 			
 			case 1:			// ASCII方式（SPRINTF でメッセージを作成）
 				SPRINTF_vRewind();
-				vfPrintf(SPRINTF_Stream, LB"%s%05d", pRx->auData, sensor_and_layer_data);
+				vfPrintf(SPRINTF_Stream, LB"%s:%05d", pRx->auData, sensor_and_layer_data);
 				memcpy(sTx.auData, SPRINTF_pu8GetBuff(), SPRINTF_u16Length());
 				sTx.u8Len = SPRINTF_u16Length();
 				break;
