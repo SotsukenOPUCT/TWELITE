@@ -8,7 +8,6 @@
                 "${workspaceFolder}/Common/Sensor",
                 "${workspaceFolder}/Common/Source_User",
                 "${default}"
-                //"/Applications/Twelite/MWSDK/Tools/VSCode/include/gcc1"
             ],
             "defines": [
                 "JN5164=5164",
